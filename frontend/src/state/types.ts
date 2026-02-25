@@ -80,3 +80,9 @@ export interface HealthPreflightDTO {
   mount_capable: boolean;
   message: string;
 }
+
+export interface ResetResponseDTO {
+  cleared_nodes: number;
+  cleared_sessions: number;
+  message: string;
+}

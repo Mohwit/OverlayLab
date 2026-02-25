@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import diff, files, health, nodes, sessions
+from app.api.routes import admin, diff, files, health, nodes, sessions
 from app.core.errors import AppError
 from app.services.container import container
 
@@ -42,6 +42,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(admin.router)
 app.include_router(sessions.router)
 app.include_router(nodes.router)
 app.include_router(files.router)

@@ -1,12 +1,15 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import DiffViewer from './components/DiffViewer';
 import FilePanel from './components/FilePanel';
 import GraphCanvas from './components/GraphCanvas';
 import LayerInspector from './components/LayerInspector';
+import OverlayLearningCue from './components/OverlayLearningCue';
 import { useAppStore } from './state/store';
 
 export default function App() {
+  const [hoveredInspectorNodeId, setHoveredInspectorNodeId] = useState<string | null>(null);
+
   const {
     graph,
     preflight,
@@ -14,10 +17,11 @@ export default function App() {
     files,
     layerInfo,
     diff,
+    loading,
     error,
     fetchGraph,
     selectNode,
-    createSession,
+    resetLab,
     createNode,
     branchSession,
     revertToNode,
@@ -32,29 +36,50 @@ export default function App() {
     fetchGraph();
   }, [fetchGraph]);
 
+  const layerRefreshToken = useMemo(
+    () => files.map((file) => `${file.path}:${file.size}:${file.mtime}`).join('|'),
+    [files],
+  );
+
+  const handleReset = () => {
+    const confirmed = window.confirm(
+      'Reset everything? This will unmount overlays and delete all local session/node files.',
+    );
+    if (!confirmed) {
+      return;
+    }
+    resetLab();
+  };
+
   return (
-    <main className="h-screen bg-gradient-to-br from-slate-100 to-slate-200 p-3 text-ink">
-      <div className="mb-2 flex items-center justify-between rounded-xl border border-slate-300 bg-white px-3 py-2">
-        <h1 className="text-sm font-semibold">OverlayFS Session Graph Lab</h1>
-        <button
-          className="rounded bg-slate-900 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:bg-slate-400"
-          onClick={() => createSession()}
-          disabled={!!preflight && (!preflight.linux || !preflight.overlay_supported || !preflight.mount_capable)}
-        >
-          New Session
-        </button>
+    <main className="h-screen bg-slate-100 p-4 text-slate-900">
+      <div className="mb-3 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+        <div className="flex items-center gap-2">
+          <h1 className="text-sm font-semibold tracking-tight text-slate-800">OverlayFS Session Graph Lab</h1>
+          <OverlayLearningCue topic="overview" buttonText="OverlayFS Guide" />
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className="rounded-lg border border-rose-200 bg-white px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:border-rose-100 disabled:text-rose-300"
+            onClick={handleReset}
+            disabled={loading}
+          >
+            Reset
+          </button>
+        </div>
       </div>
       {preflight && (!preflight.linux || !preflight.overlay_supported || !preflight.mount_capable) && (
-        <div className="mb-2 rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+        <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-800">
           OverlayFS preflight failed: {preflight.message}
         </div>
       )}
-      {error && <div className="mb-2 rounded border border-rose-300 bg-rose-50 px-3 py-2 text-xs text-rose-700">{error}</div>}
-      <div className="grid h-[calc(100vh-72px)] grid-cols-[2fr_1fr] gap-3">
-        <section className="min-h-0 rounded-xl border border-slate-300 bg-canvas">
+      {error && <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">{error}</div>}
+      <div className="grid h-[calc(100vh-96px)] grid-cols-[2fr_1fr] gap-3">
+        <section className="min-h-0 rounded-2xl border border-slate-200 bg-white shadow-sm">
           <GraphCanvas
             graph={graph}
             selectedNodeId={selectedNodeId}
+            hoveredNodeId={hoveredInspectorNodeId}
             onSelectNode={selectNode}
             onCreateNode={createNode}
             onBranch={branchSession}
@@ -62,8 +87,15 @@ export default function App() {
             onDiff={loadDiffAgainstActive}
           />
         </section>
-        <aside className="min-h-0 space-y-3 overflow-auto">
-          <LayerInspector layerInfo={layerInfo} onLoadLayerFiles={getLayerFilesForSelectedNode} />
+        <aside className="min-h-0 space-y-3 overflow-auto pr-1">
+          <LayerInspector
+            layerInfo={layerInfo}
+            nodes={graph.nodes}
+            onSelectNode={selectNode}
+            onHoverNodeChange={setHoveredInspectorNodeId}
+            refreshToken={layerRefreshToken}
+            onLoadLayerFiles={getLayerFilesForSelectedNode}
+          />
           <FilePanel files={files} onWrite={writeFile} onDelete={deleteFile} onReadContent={readSelectedFileContent} />
           <DiffViewer diff={diff} />
         </aside>

@@ -1,4 +1,13 @@
-import type { DiffDTO, FileContentDTO, FileEntryDTO, GraphDTO, HealthPreflightDTO, LayerFilesDTO, LayerInfoDTO } from './types';
+import type {
+  DiffDTO,
+  FileContentDTO,
+  FileEntryDTO,
+  GraphDTO,
+  HealthPreflightDTO,
+  LayerFilesDTO,
+  LayerInfoDTO,
+  ResetResponseDTO,
+} from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 
@@ -16,6 +25,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   preflight: () => request<HealthPreflightDTO>('/health/preflight'),
+  resetLab: () => request<ResetResponseDTO>('/admin/reset', { method: 'POST' }),
   getGraph: () => request<GraphDTO>('/graph'),
   createSession: (name?: string) => request('/session/create', { method: 'POST', body: JSON.stringify({ name: name ?? null }) }),
   createNode: (session_id: string, from_node_id?: string) =>

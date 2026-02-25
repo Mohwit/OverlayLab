@@ -14,10 +14,11 @@ interface AppState {
   error: string | null;
   fetchGraph: () => Promise<void>;
   selectNode: (nodeId: string) => Promise<void>;
-  createSession: () => Promise<void>;
+  createSession: (name?: string) => Promise<void>;
   createNode: (nodeId: string) => Promise<void>;
   branchSession: (nodeId: string) => Promise<void>;
   revertToNode: (nodeId: string) => Promise<void>;
+  resetLab: () => Promise<void>;
   writeFile: (path: string, content: string, mode: 'overwrite' | 'append') => Promise<void>;
   deleteFile: (path: string) => Promise<void>;
   readSelectedFileContent: (path: string) => Promise<string>;
@@ -46,15 +47,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ loading: false, error: preflight.message });
         return;
       }
-      const graph = await api.getGraph();
+      let graph = await api.getGraph();
+      if (graph.sessions.length === 0) {
+        await api.createSession('start');
+        graph = await api.getGraph();
+      }
       set((state) => ({
+        // Keep current selection only if it still exists in the freshly loaded graph.
         graph,
         loading: false,
-        selectedNodeId: state.selectedNodeId ?? graph.nodes[0]?.node_id ?? null,
+        selectedNodeId:
+          state.selectedNodeId && graph.nodes.some((n) => n.node_id === state.selectedNodeId)
+            ? state.selectedNodeId
+            : graph.nodes[0]?.node_id ?? null,
       }));
       const selected = get().selectedNodeId;
       if (selected) {
         await get().selectNode(selected);
+      } else {
+        set({ files: [], layerInfo: null, diff: null });
       }
     } catch (err) {
       set({ loading: false, error: String(err) });
@@ -70,9 +81,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  createSession: async () => {
+  createSession: async (name?: string) => {
     try {
-      await api.createSession();
+      await api.createSession(name);
       await get().fetchGraph();
     } catch (err) {
       set({ error: String(err) });
@@ -112,6 +123,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       await get().selectNode(nodeId);
     } catch (err) {
       set({ error: String(err) });
+    }
+  },
+
+  resetLab: async () => {
+    set({ loading: true, error: null });
+    try {
+      await api.resetLab();
+      set({
+        graph: emptyGraph,
+        selectedNodeId: null,
+        files: [],
+        layerInfo: null,
+        diff: null,
+        loading: false,
+      });
+      await get().fetchGraph();
+    } catch (err) {
+      set({ loading: false, error: String(err) });
     }
   },
 

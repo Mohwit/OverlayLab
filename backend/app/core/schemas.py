@@ -161,3 +161,9 @@ class HealthPreflightDTO(BaseModel):
     overlay_supported: bool
     mount_capable: bool
     message: str
+
+
+class ResetResponseDTO(BaseModel):
+    cleared_nodes: int
+    cleared_sessions: int
+    message: str

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import uuid
 from pathlib import Path
@@ -45,6 +46,47 @@ class GraphStore:
                 self.sessions[session_file.session.session_id] = session_file.session
                 for node in session_file.nodes:
                     self.nodes[node.node_id] = node
+            self._normalize_lowerdir_references()
+
+    def _node_by_merged_path(self, merged_path: str) -> NodeRecord | None:
+        for node in self.nodes.values():
+            if node.merged == merged_path:
+                return node
+        return None
+
+    def _expand_lowerdirs(self, lowerdirs: list[str], visited_node_ids: set[str]) -> list[str]:
+        expanded: list[str] = []
+        for lower in lowerdirs:
+            source_node = self._node_by_merged_path(lower)
+            if source_node and source_node.node_id not in visited_node_ids:
+                nested = self._expand_lowerdirs(
+                    [source_node.upperdir, *source_node.lowerdirs],
+                    visited_node_ids | {source_node.node_id},
+                )
+                expanded.extend(nested)
+            else:
+                expanded.append(lower)
+
+        # Preserve order while removing duplicates after expansion.
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for path in expanded:
+            if path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        return normalized
+
+    def _normalize_lowerdir_references(self) -> None:
+        changed_session_ids: set[str] = set()
+        for node in self.nodes.values():
+            normalized = self._expand_lowerdirs(node.lowerdirs, {node.node_id})
+            if normalized == node.lowerdirs:
+                continue
+            node.lowerdirs = normalized
+            changed_session_ids.add(node.session_id)
+        for session_id in changed_session_ids:
+            self._save_session(session_id)
 
     def _session_file_path(self, session_id: str) -> Path:
         return self.sessions_dir / f"{session_id}.json"
@@ -90,7 +132,8 @@ class GraphStore:
             parent_node_id = from_node_id
             lowerdirs = [str(self.base_dir.resolve())]
             if from_node_id:
-                lowerdirs = [self.nodes[from_node_id].merged]
+                source = self.nodes[from_node_id]
+                lowerdirs = self._expand_lowerdirs([source.upperdir, *source.lowerdirs], {source.node_id})
 
             root_node = NodeRecord(
                 node_id=node_id,
@@ -120,11 +163,12 @@ class GraphStore:
             node_id = self._new_id("node")
             dirs = self.create_node_dirs(node_id)
             parent = self.nodes[from_node_id]
+            lowerdirs = self._expand_lowerdirs([parent.upperdir, *parent.lowerdirs], {parent.node_id})
             node = NodeRecord(
                 node_id=node_id,
                 parent_node_id=parent.node_id,
                 session_id=session_id,
-                lowerdirs=[parent.merged],
+                lowerdirs=lowerdirs,
                 upperdir=dirs["upperdir"],
                 workdir=dirs["workdir"],
                 merged=dirs["merged"],
@@ -144,6 +188,26 @@ class GraphStore:
         with self._lock:
             self.nodes[node.node_id] = node
             self._save_session(node.session_id)
+
+    def reset_graph(self) -> dict[str, int]:
+        with self._lock:
+            cleared_nodes = len(self.nodes)
+            cleared_sessions = len(self.sessions)
+
+            self.sessions.clear()
+            self.nodes.clear()
+            self.ensure_layout()
+
+            for session_file in self.sessions_dir.glob("*.json"):
+                session_file.unlink(missing_ok=True)
+
+            for entry in self.nodes_dir.iterdir():
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink(missing_ok=True)
+
+            return {"nodes": cleared_nodes, "sessions": cleared_sessions}
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         return self.sessions.get(session_id)

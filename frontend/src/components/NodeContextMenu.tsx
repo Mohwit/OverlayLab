@@ -16,7 +16,7 @@ function MenuButton({ label, onClick }: { label: string; onClick: () => void }) 
   return (
     <button
       type="button"
-      className="w-full rounded-md px-3 py-2 text-left text-sm hover:bg-slate-100"
+      className="w-full rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
       onClick={onClick}
     >
       {label}
@@ -28,7 +28,7 @@ export default function NodeContextMenu(props: Props) {
   const stop = (e: MouseEvent) => e.stopPropagation();
   return (
     <div
-      className="absolute z-50 min-w-56 rounded-lg border border-slate-200 bg-white p-2 shadow-xl"
+      className="absolute z-50 min-w-56 rounded-xl border border-slate-200 bg-white p-2 shadow-xl"
       style={{ left: props.x, top: props.y }}
       onClick={stop}
     >

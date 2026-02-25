@@ -32,6 +32,13 @@ Secondary panel:
 - layer inspector (`lowerdir` / `upperdir` / `workdir` / `merged`)
 - merged-view file operations (`.txt`, `.md`)
 - diff viewer
+- contextual OverlayFS learning cues (`i` buttons) + full in-app guide popup
+
+Session UX:
+
+- app auto-creates a default `start` session if graph is empty
+- branch sessions are shown with fallback labels `branch-1`, `branch-2`, ... when unnamed
+- reset button clears node/session data and reboots the graph back to `start`
 
 ## OverlayFS Mapping
 
@@ -62,7 +69,9 @@ mount -t overlay overlay -o lowerdir=<base>,upperdir=<upper>,workdir=<work> <mer
 ### Create Child Node
 
 - parent = selected or active node
-- lowerdir = `parent.merged`
+- lowerdirs are flattened from parent ancestry (no nested overlay-on-overlay dependency):
+  - `lowerdirs = [parent.upperdir, ...parent.lowerdirs]`
+  - duplicates removed while preserving order
 - new empty `upper/work`
 - mount new `merged`
 
@@ -75,12 +84,19 @@ mount -t overlay overlay -o lowerdir=<base>,upperdir=<upper>,workdir=<work> <mer
 ### Branch Session
 
 - new session root parent = selected source node
-- new session root lowerdir = source node merged
+- new session root lowerdirs follow source ancestry stack:
+  - `lowerdirs = [source.upperdir, ...source.lowerdirs]`
 - independent active pointer and future node chain
+
+### Why Flattened lowerdirs
+
+- avoids brittle deep chains like `lowerdir=<other_node_merged>`
+- keeps mounts stable across long interaction histories
+- makes layer provenance explicit in inspector (`upper` lineage + `base`)
 
 ## Linux Requirements
 
-- Linux kernel with OverlayFS support (`/proc/filesystems` includes `overlay`)
+- Linux kernel with OverlayFS support (`/proc/filesystems` includes `overlay`) or available overlay module files
 - Mount capability (this implementation expects root privileges)
 - `mount`/`umount` binaries available
 
@@ -98,6 +114,7 @@ Preflight endpoint:
 - `POST /node/{node_id}/file`
 - `DELETE /node/{node_id}/file`
 - `GET /graph`
+- `POST /admin/reset`
 - `GET /node/{node_id}/layers`
 - `GET /diff?from_node_id=...&to_node_id=...`
 
@@ -110,11 +127,17 @@ uv sync
 make backend-dev
 ```
 
+If running directly on host, use root for mount operations:
+
+```bash
+sudo env "PATH=/home/<user>/.local/bin:$PATH" make backend-dev
+```
+
 ### Frontend
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -141,6 +164,7 @@ Notes:
 - This container is configured with `privileged: true` because OverlayFS mounts require elevated privileges.
 - Persistent graph/layer metadata is stored in the named Docker volume `overlay_lab_data`.
 - APIs are served from the same origin (`http://localhost:8000`), so no frontend API URL setup is needed.
+- Docker image now uses deterministic frontend dependency install via `npm ci`.
 
 ## Testing
 
@@ -156,3 +180,4 @@ Note: mount integration behavior requires Linux + mount privileges. Included tes
 - `MOUNT_FAILED`: run backend with sufficient privileges and check mount options/path permissions.
 - stale mounts after crash: restart backend to trigger startup orphan cleanup, or manually `umount overlay_lab/nodes/*/merged`.
 - On macOS, running in Docker can work because Docker Desktop runs Linux inside a VM. It is still kernel/privilege dependent, so keep `privileged: true` and test with `GET /health/preflight`.
+- inspector path preview looks stale after file save: hover again or keep hover active; cache refresh is wired to file list updates.

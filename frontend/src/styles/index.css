@@ -4,9 +4,19 @@
 
 :root {
   color: #0f172a;
+  background-color: #f1f5f9;
   font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  text-rendering: geometricPrecision;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
   margin: 0;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
 }
