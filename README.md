@@ -7,6 +7,13 @@ OverlayFS Session Graph Lab is a Linux-only educational tool that maps AI-agent 
 - Session = branch/timeline
 - Revert = move active pointer without file copy
 
+## Detailed Docs
+
+- [Docs Index](docs/README.md)
+- [Backend OverlayFS Implementation](docs/backend-overlayfs-implementation.md)
+- [Backend API and Request Flows](docs/backend-api-and-flows.md)
+- [Operations and Troubleshooting](docs/operations-and-troubleshooting.md)
+
 ## Architecture
 
 ### Backend (FastAPI)
