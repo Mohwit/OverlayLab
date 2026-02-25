@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/diffviewer.tsx","./src/components/filepanel.tsx","./src/components/graphcanvas.tsx","./src/components/layerinspector.tsx","./src/components/nodecontextmenu.tsx","./src/state/api.ts","./src/state/store.ts","./src/state/types.ts"],"version":"5.9.3"}

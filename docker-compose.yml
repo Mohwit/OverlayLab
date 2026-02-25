@@ -1,0 +1,19 @@
+services:
+  overlay-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: overlayfs-session-graph-lab
+    privileged: true
+    ports:
+      - "8000:8000"
+    environment:
+      OVERLAY_LAB_ROOT: /app/overlay_lab
+      CLEANUP_INTERVAL_SECONDS: "30"
+      MOUNT_IDLE_TTL_SECONDS: "120"
+    volumes:
+      - overlay_lab_data:/app/overlay_lab
+    restart: unless-stopped
+
+volumes:
+  overlay_lab_data:

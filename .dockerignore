@@ -1,0 +1,10 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+frontend/node_modules
+frontend/dist
+overlay_lab/nodes
+overlay_lab/sessions/*.json

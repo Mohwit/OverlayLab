@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+
+# Virtual environments
+.venv
+
+# Frontend artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Overlay runtime data
+overlay_lab/nodes/
+overlay_lab/sessions/*.json
+!overlay_lab/sessions/.gitkeep
