@@ -1,21 +1,21 @@
-# OverlayLab Documentation
+# Recall FS Documentation
 
-This folder contains implementation-level documentation for the project, with a focus on the backend OverlayFS design.
+This folder contains implementation-level documentation for the project, with a focus on the backend SQLite overlay engine.
 
 ## Start Here
 
-1. [Backend OverlayFS Implementation](./backend-overlayfs-implementation.md)
+1. [Backend SQLite Overlay Implementation](./backend-overlayfs-implementation.md)
 2. [Backend API and Request Flows](./backend-api-and-flows.md)
 3. [Operations and Troubleshooting](./operations-and-troubleshooting.md)
 
 ## What You Will Find
 
-- How `lowerdir`, `upperdir`, `workdir`, and `merged` are built per node
-- How branching and linear progression are persisted in graph metadata
-- Why lowerdir stacks are flattened (and how legacy data is normalized)
-- How file writes trigger copy-on-write in this implementation
+- How the SQLite copy-on-write overlay engine resolves files through ancestry chains
+- How `node_files` (upper layer) and `base_files` (base layer) tables combine via merged-view resolution
+- How whiteout markers handle deletions without removing data from lower layers
+- How branching reuses the parent ancestry chain with zero data copy
 - API-level request/response behavior used by the frontend graph UI
-- Operational commands for Linux host runs and mount failure triage
+- Operational guidance for running and troubleshooting the application
 
 ## Source of Truth
 

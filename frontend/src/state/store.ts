@@ -43,7 +43,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const preflight = await api.preflight();
       set({ preflight });
-      if (!preflight.linux || !preflight.overlay_supported || !preflight.mount_capable) {
+      if (!preflight.ready) {
         set({ loading: false, error: preflight.message });
         return;
       }

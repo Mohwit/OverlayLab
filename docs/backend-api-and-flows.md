@@ -7,19 +7,17 @@ This document maps backend endpoints to implementation behavior and graph/layer 
 ### Health and Preflight
 
 - `GET /health/preflight`
-  - returns `{ linux, overlay_supported, mount_capable, message }`
+  - returns `{ ready, message }`
   - source: [backend/app/api/routes/health.py](../backend/app/api/routes/health.py)
 
 ### Sessions
 
 - `POST /session/create`
-  - creates a new session + root node
-  - mounts root node immediately
+  - creates a new session + root node in SQLite
   - source: [backend/app/api/routes/sessions.py](../backend/app/api/routes/sessions.py)
 - `POST /session/branch/{node_id}`
   - creates a new session rooted from `node_id`
-  - source node is mounted first
-  - new branch root lowerdirs derive from source node lineage
+  - new branch root's `parent_node_id` points to source node; ancestry chain gives it all lower layers
   - source: [backend/app/api/routes/sessions.py](../backend/app/api/routes/sessions.py)
 
 ### Nodes
@@ -30,10 +28,9 @@ This document maps backend endpoints to implementation behavior and graph/layer 
   - source: [backend/app/api/routes/nodes.py](../backend/app/api/routes/nodes.py)
 - `POST /node/revert/{node_id}`
   - sets session active pointer to target node
-  - mounts target node first if needed
   - source: [backend/app/api/routes/nodes.py](../backend/app/api/routes/nodes.py)
 - `GET /node/{node_id}/layers`
-  - returns layer path metadata (merged/upper/work/lowerdirs)
+  - returns virtual layer path metadata (merged/upper/work/lowerdirs) computed from ancestry
   - source: [backend/app/api/routes/nodes.py](../backend/app/api/routes/nodes.py)
 - `GET /graph`
   - returns sessions, nodes, and parent->child edges
@@ -42,27 +39,27 @@ This document maps backend endpoints to implementation behavior and graph/layer 
 ### Files and Layer Inspection
 
 - `GET /node/{node_id}/files`
-  - merged-view recursive listing
+  - merged-view file listing resolved through the COW ancestry chain
 - `GET /node/{node_id}/file?path=<relative>`
-  - reads one text file
+  - reads one text file from the resolved merged view
 - `GET /node/{node_id}/layer-files?layer=merged|upper|lower&index=<n>`
-  - inspects file listings of a specific layer root
+  - inspects file listings of a specific layer
 - `POST /node/{node_id}/file`
-  - writes file (overwrite/append)
+  - writes file to the node's upper layer in `node_files`
 - `DELETE /node/{node_id}/file`
-  - deletes a file from merged view
+  - inserts a whiteout marker in `node_files`
 - source: [backend/app/api/routes/files.py](../backend/app/api/routes/files.py)
 
 ### Diff
 
 - `GET /diff?from_node_id=...&to_node_id=...`
-  - unified diff over `.txt`/`.md`
+  - unified diff over `.txt`/`.md` files between two nodes' resolved merged views
   - source: [backend/app/api/routes/diff.py](../backend/app/api/routes/diff.py), [backend/app/services/file_service.py](../backend/app/services/file_service.py)
 
 ### Admin
 
 - `POST /admin/reset`
-  - unmount + cleanup + metadata/node directory wipe
+  - deletes all rows from `node_files`, `nodes`, `sessions`, `base_files`
   - source: [backend/app/api/routes/admin.py](../backend/app/api/routes/admin.py)
 
 ## 2. Request Flow: Create Session
@@ -70,102 +67,94 @@ This document maps backend endpoints to implementation behavior and graph/layer 
 Sequence:
 
 1. API route calls `graph_store.create_session(name=...)`
-2. `graph_store` creates node directories (`upper/work/merged`)
-3. root node lowerdir starts from `base`
-4. route mounts root node with `overlay_manager.mount_node(...)`
-5. route sets `node.mount_state = "mounted"` and persists
-6. response includes `session`, `root_node`, `graph_delta`
+2. `graph_store` inserts rows into `sessions` and `nodes` tables
+3. Root node's `parent_node_id` is `None`; its only lower layer is `base_files`
+4. Ancestry chain is computed for the DTO response
+5. Response includes `session`, `root_node`, `graph_delta`
 
-Reference snippets:
+Reference snippet:
 
 ```python
 session, node = container.graph_store.create_session(name=payload.name)
-container.overlay_manager.mount_node(node)
-node.mount_state = "mounted"
-container.graph_store.update_node(node)
+ancestry = container.sqlite_overlay.get_ancestry_chain(node.node_id)
+
+return SessionCreateResponse(
+    session=SessionDTO(**session.model_dump()),
+    root_node=NodeDTO.from_record(node, ancestry),
+    graph_delta=GraphDelta(added_node_id=node.node_id),
+)
 ```
 
 Source: [backend/app/api/routes/sessions.py](../backend/app/api/routes/sessions.py)
 
 ## 3. Request Flow: Create Node in Existing Session
 
-Key invariant: child node lowerdirs are flattened from parent lineage.
+The child node's `parent_node_id` points to the source node. The ancestry chain gives it access to all ancestor layers.
 
 ```python
 from_node_id = payload.from_node_id or session.active_node_id
 node = container.graph_store.create_node(session_id=payload.session_id, from_node_id=from_node_id)
-container.overlay_manager.mount_node(node)
-node.mount_state = "mounted"
-container.graph_store.update_node(node)
+ancestry = container.sqlite_overlay.get_ancestry_chain(node.node_id)
 ```
 
 Source: [backend/app/api/routes/nodes.py](../backend/app/api/routes/nodes.py)
 
-Inside graph store:
+Inside graph store, `create_node` inserts the row and updates `active_node_id`:
 
 ```python
-parent = self.nodes[from_node_id]
-lowerdirs = self._expand_lowerdirs([parent.upperdir, *parent.lowerdirs], {parent.node_id})
+conn.execute("INSERT INTO nodes (node_id, parent_node_id, session_id, created_at) VALUES (?, ?, ?, ?)", ...)
+conn.execute("UPDATE sessions SET active_node_id = ? WHERE session_id = ?", ...)
 ```
 
 Source: [backend/app/services/graph_store.py](../backend/app/services/graph_store.py)
 
 ## 4. Request Flow: Branch Session from Any Node
 
-Branch creates a new session root whose parent points to source node and whose layer stack is derived from source ancestry.
+Branch creates a new session root whose `parent_node_id` points to the source node. The ancestry chain provides all lower layers from the source node's lineage.
 
 ```python
 session, root_node = container.graph_store.create_session(name=payload.name, from_node_id=node_id)
-container.overlay_manager.mount_node(root_node)
-root_node.mount_state = "mounted"
-container.graph_store.update_node(root_node)
+ancestry = container.sqlite_overlay.get_ancestry_chain(root_node.node_id)
 ```
 
 Source: [backend/app/api/routes/sessions.py](../backend/app/api/routes/sessions.py)
 
 ## 5. Request Flow: File Write (Copy-On-Write)
 
-1. route validates node
-2. route ensures merged mount exists
-3. `FileService.write_file(...)` writes to `node.merged/<relative path>`
-4. overlay manager `touch(node_id)` updates access time for idle-cleanup logic
+1. Route validates node exists
+2. `FileService.write_file(...)` encodes content as bytes
+3. `SqliteOverlayFS.write_file()` inserts/replaces a row in `node_files` for that node
+4. If mode is `"append"`, existing content is resolved first and prepended
 
 ```python
-bytes_written = container.file_service.write_file(node, payload.path, payload.content, payload.mode)
-container.overlay_manager.touch(node_id)
+bytes_written = container.file_service.write_file(node_id, payload.path, payload.content, payload.mode)
 ```
 
 Source: [backend/app/api/routes/files.py](../backend/app/api/routes/files.py)
 
 ## 6. Layer Inspection API Semantics
 
-- `layer=merged`: mount-aware view (what app sees)
-- `layer=upper`: node-local changes only
-- `layer=lower&index=n`: specific lowerdir item in order
-
-Relevant code:
+- `layer=merged`: resolved COW view (base + all ancestors + node)
+- `layer=upper`: only rows from `node_files` for this node (excluding whiteouts)
+- `layer=lower&index=n`: ancestor N's upper layer files, or base layer for the last index
 
 ```python
-if layer == "merged":
-    root = Path(node.merged)
-elif layer == "upper":
-    root = Path(node.upperdir)
-else:
-    root = Path(node.lowerdirs[index])
+records = container.sqlite_overlay.list_layer_files(node_id, layer, index)
 ```
 
 Source: [backend/app/api/routes/files.py](../backend/app/api/routes/files.py)
 
 ## 7. Request Flow: Reset
 
-`POST /admin/reset` is a full lab cleanup operation:
+`POST /admin/reset` clears all data from the SQLite database:
 
 ```python
-for node in container.graph_store.get_all_nodes():
-    container.overlay_manager.unmount_path(node.merged)
-container.overlay_manager.startup_cleanup_orphan_mounts(set())
 summary = container.graph_store.reset_graph()
-container.overlay_manager.clear_access_cache()
+return ResetResponseDTO(
+    cleared_nodes=summary["nodes"],
+    cleared_sessions=summary["sessions"],
+    message="Reset complete. All sessions, nodes, and file data were cleared.",
+)
 ```
 
 Source: [backend/app/api/routes/admin.py](../backend/app/api/routes/admin.py)
@@ -202,7 +191,7 @@ curl -s -X POST http://localhost:8000/node/node_abcd1234/file \
   -d '{"path":"notes.md","content":"hello","mode":"overwrite"}' | jq
 ```
 
-### Read Layer Files (Upperdir)
+### Read Layer Files (Upper Layer)
 
 ```bash
 curl -s "http://localhost:8000/node/node_abcd1234/layer-files?layer=upper" | jq
@@ -214,7 +203,7 @@ curl -s "http://localhost:8000/node/node_abcd1234/layer-files?layer=upper" | jq
 curl -s "http://localhost:8000/diff?from_node_id=node_aaa&to_node_id=node_bbb" | jq
 ```
 
-### Reset Lab
+### Reset
 
 ```bash
 curl -s -X POST http://localhost:8000/admin/reset | jq

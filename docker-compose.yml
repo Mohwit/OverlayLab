@@ -3,14 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: overlayfs-session-graph-lab
-    privileged: true
+    container_name: recall-fs-lab
     ports:
       - "8000:8000"
     environment:
       OVERLAY_LAB_ROOT: /app/overlay_lab
-      CLEANUP_INTERVAL_SECONDS: "30"
-      MOUNT_IDLE_TTL_SECONDS: "120"
     volumes:
       - overlay_lab_data:/app/overlay_lab
     restart: unless-stopped

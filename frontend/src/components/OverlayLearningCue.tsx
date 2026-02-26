@@ -23,24 +23,21 @@ function TopicContent({ topic }: { topic: TopicId }) {
     return (
       <div className="space-y-3 text-xs text-slate-700">
         <p>
-          OverlayFS combines many directories into one logical filesystem view. In this lab, each node is an OverlayFS
-          mount with its own writable layer.
+          Recall-FS uses copy-on-write layering to give each node its own writable layer, backed by a SQLite database.
+          The concept is inspired by OverlayFS, but runs on any platform.
         </p>
         <div className="rounded border border-slate-200 bg-slate-50 p-3 font-mono text-[11px]">
-          lowerdir(s) + upperdir + workdir -&gt; merged
+          lower layers + upper layer -&gt; merged view
         </div>
         <ul className="list-disc space-y-1 pl-5">
           <li>
-            `merged`: what the app reads/writes.
+            `merged`: the combined view the app reads/writes.
           </li>
           <li>
-            `upperdir`: writable layer for current node.
+            `upper`: writable layer for current node.
           </li>
           <li>
-            `lowerdir`: inherited read-only history.
-          </li>
-          <li>
-            `workdir`: kernel scratch area required by OverlayFS.
+            `lower`: inherited read-only history from ancestor nodes.
           </li>
         </ul>
       </div>
@@ -50,18 +47,17 @@ function TopicContent({ topic }: { topic: TopicId }) {
   if (topic === 'layers') {
     return (
       <div className="space-y-3 text-xs text-slate-700">
-        <p>Each selected node has these real paths in this project:</p>
+        <p>Each selected node has virtual layer references stored in SQLite:</p>
         <div className="rounded border border-slate-200 bg-slate-50 p-3 font-mono text-[11px]">
-          overlay_lab/nodes/&lt;node_id&gt;/upper<br />
-          overlay_lab/nodes/&lt;node_id&gt;/work<br />
-          overlay_lab/nodes/&lt;node_id&gt;/merged
+          node:&lt;node_id&gt;/upper<br />
+          node:&lt;node_id&gt;/merged
         </div>
         <ul className="list-disc space-y-1 pl-5">
           <li>
-            `lowerdir 1..N` is ordered. Earlier entries have higher read priority than later entries.
+            Lower layers 1..N are ordered. Earlier entries have higher read priority.
           </li>
           <li>
-            The final fallback is usually `overlay_lab/base`.
+            The final fallback is the shared `base` layer.
           </li>
           <li>
             In the inspector, linked paths map back to graph nodes; `base` is not a node.
@@ -74,18 +70,18 @@ function TopicContent({ topic }: { topic: TopicId }) {
   if (topic === 'readwrite') {
     return (
       <div className="space-y-3 text-xs text-slate-700">
-        <p>Lookup and write behavior in OverlayFS:</p>
+        <p>Lookup and write behavior in the copy-on-write layer system:</p>
         <div className="rounded border border-slate-200 bg-slate-50 p-3 font-mono text-[11px]">
-          Read path lookup: upper -&gt; lowerdir1 -&gt; lowerdir2 -&gt; ... -&gt; base
+          Read path lookup: upper -&gt; lower1 -&gt; lower2 -&gt; ... -&gt; base
           <br />
           Write path target: upper only
         </div>
         <ul className="list-disc space-y-1 pl-5">
           <li>
-            Editing a file that exists in a lower layer triggers copy-on-write (copy-up) into `upperdir`.
+            Editing a file that exists in a lower layer triggers copy-on-write into the upper layer.
           </li>
           <li>
-            Deleting lower-only files creates whiteouts in `upperdir` so they disappear in `merged`.
+            Deleting lower-only files creates whiteout markers so they disappear from the merged view.
           </li>
           <li>
             File editor in this UI is focused on `.txt` and `.md` for safe readable edits.
@@ -98,22 +94,22 @@ function TopicContent({ topic }: { topic: TopicId }) {
   if (topic === 'branching') {
     return (
       <div className="space-y-3 text-xs text-slate-700">
-        <p>How this graph maps to OverlayFS history:</p>
+        <p>How the graph maps to copy-on-write history:</p>
         <ul className="list-disc space-y-1 pl-5">
           <li>
-            Creating an interaction node: new `upperdir`, inherited lower stack from current node.
+            Creating a node: new upper layer, inherited lower stack from parent node.
           </li>
           <li>
-            Branching: creates a new session lane with a root node that reuses source node history via `lowerdir`.
+            Branching: creates a new session lane with a root node that reuses source node history as lower layers.
           </li>
           <li>
-            Unchanged files are shared logically through lower layers; only edits occupy new upper space.
+            Unchanged files are shared through the ancestry chain; only edits occupy new upper space.
           </li>
         </ul>
         <div className="rounded border border-slate-200 bg-slate-50 p-3 font-mono text-[11px]">
-          node A (upperA)<br />
-          node B lower: [upperA, base]<br />
-          node C lower: [upperB, upperA, base]
+          node A (upper A)<br />
+          node B lower: [A/upper, base]<br />
+          node C lower: [B/upper, A/upper, base]
         </div>
       </div>
     );
@@ -121,14 +117,11 @@ function TopicContent({ topic }: { topic: TopicId }) {
 
   return (
     <div className="space-y-3 text-xs text-slate-700">
-      <p>Practical constraints in this lab:</p>
+      <p>Practical notes for this lab:</p>
       <ul className="list-disc space-y-1 pl-5">
-        <li>Linux kernel + OverlayFS support required.</li>
-        <li>Mount operations need elevated privileges in this implementation.</li>
-        <li>
-          Common mount errors come from invalid lowerdir stacks, permission issues, or unavailable overlay module.
-        </li>
-        <li>Reset unmounts and deletes local node/session data; base files remain.</li>
+        <li>All layer data is stored in a SQLite database -- works on any platform.</li>
+        <li>No elevated privileges or special kernel modules are required.</li>
+        <li>Reset deletes all session, node, and file data; base layer files remain.</li>
       </ul>
       <div className="rounded border border-slate-200 bg-slate-50 p-3 text-[11px]">
         Tip: Use Layer Inspector hover/click to understand how paths map to graph nodes.
@@ -177,8 +170,8 @@ export default function OverlayLearningCue({ topic = 'overview', buttonText, com
           setActiveTopic(topic);
           setOpen(true);
         }}
-        title="OverlayFS learning guide"
-        aria-label="Open OverlayFS learning guide"
+        title="Copy-on-write layer guide"
+        aria-label="Open copy-on-write layer guide"
       >
         {buttonText ?? 'i'}
       </button>
@@ -194,7 +187,7 @@ export default function OverlayLearningCue({ topic = 'overview', buttonText, com
           >
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
-                <h3 className="text-sm font-semibold text-slate-800">OverlayFS Learning Guide</h3>
+                <h3 className="text-sm font-semibold text-slate-800">Copy-on-Write Layer Guide</h3>
                 <p className="text-[11px] text-slate-500">Concepts used directly in this lab UI and graph behavior</p>
               </div>
               <button

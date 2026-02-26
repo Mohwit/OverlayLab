@@ -10,4 +10,4 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 @router.get("/preflight", response_model=HealthPreflightDTO)
 def preflight(container=Depends(get_container)):
-    return HealthPreflightDTO(**container.overlay_manager.preflight())
+    return HealthPreflightDTO(**container.sqlite_overlay.preflight())

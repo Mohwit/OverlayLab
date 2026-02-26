@@ -34,7 +34,7 @@ interface GitNodeData {
   active: boolean;
   selected: boolean;
   hovered: boolean;
-  mountState: 'mounted' | 'unmounted';
+  mountState: string;
 }
 
 const NODE_X_GAP = 230;
@@ -143,13 +143,8 @@ const GitNode = memo(({ data }: NodeProps) => {
       </div>
       <div className="mt-1 flex items-center justify-between gap-2">
         <span className="max-w-[100px] truncate text-[10px] text-slate-500">{payload.sessionLabel}</span>
-        <span
-          className={[
-            'rounded px-1.5 py-0.5 text-[9px] font-medium',
-            payload.mountState === 'mounted' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600',
-          ].join(' ')}
-        >
-          {payload.mountState}
+        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700">
+          available
         </span>
       </div>
     </div>

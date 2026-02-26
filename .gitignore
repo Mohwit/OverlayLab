@@ -15,6 +15,5 @@ frontend/node_modules/
 frontend/dist/
 
 # Overlay runtime data
-overlay_lab/nodes/
-overlay_lab/sessions/*.json
-!overlay_lab/sessions/.gitkeep
+overlay_lab/
+

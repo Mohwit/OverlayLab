@@ -1,16 +1,17 @@
-# OverlayFS Session Graph Lab
+# Recall FS -- Session Graph Lab
 
-OverlayFS Session Graph Lab is a Linux-only educational tool that maps AI-agent session state transitions to **real OverlayFS mounts**.
+Recall FS is a cross-platform educational tool that maps AI-agent session state transitions to a **copy-on-write filesystem** backed by SQLite.
 
 - Node = one interaction state (overlay layer)
-- Edge = parent relationship (lowerdir ancestry)
+- Edge = parent relationship (ancestry chain)
 - Session = branch/timeline
 - Revert = move active pointer without file copy
+
+The overlay engine stores all file data in a single `recall.db` SQLite database, implementing the same copy-on-write semantics as Linux OverlayFS -- but without requiring Linux, kernel modules, or root privileges.
 
 ## Detailed Docs
 
 - [Docs Index](docs/README.md)
-- [Backend OverlayFS Implementation](docs/backend-overlayfs-implementation.md)
 - [Backend API and Request Flows](docs/backend-api-and-flows.md)
 - [Operations and Troubleshooting](docs/operations-and-troubleshooting.md)
 
@@ -18,10 +19,10 @@ OverlayFS Session Graph Lab is a Linux-only educational tool that maps AI-agent 
 
 ### Backend (FastAPI)
 
-- `backend/app/services/overlay_manager.py`: mount/unmount and mount lifecycle management
-- `backend/app/services/graph_store.py`: persistent session/node graph metadata
+- `backend/app/services/sqlite_overlay.py`: SQLite-backed copy-on-write overlay engine (ancestry-chain file resolution, whiteout deletions)
+- `backend/app/services/graph_store.py`: persistent session/node graph metadata in SQLite
 - `backend/app/services/file_service.py`: `.txt`/`.md` CRUD and node diff generation
-- `backend/app/services/cleanup.py`: startup orphan mount cleanup + idle TTL unmount
+- `backend/app/services/db.py`: SQLite database initialization and connection management
 
 ### Frontend (React + React Flow)
 
@@ -36,10 +37,10 @@ Graph-first UI built with React Flow:
 
 Secondary panel:
 
-- layer inspector (`lowerdir` / `upperdir` / `workdir` / `merged`)
+- layer inspector (lower layers / upper layer / merged view)
 - merged-view file operations (`.txt`, `.md`)
 - diff viewer
-- contextual OverlayFS learning cues (`i` buttons) + full in-app guide popup
+- contextual learning cues (`i` buttons) + full in-app guide popup
 
 Session UX:
 
@@ -47,69 +48,37 @@ Session UX:
 - branch sessions are shown with fallback labels `branch-1`, `branch-2`, ... when unnamed
 - reset button clears node/session data and reboots the graph back to `start`
 
-## OverlayFS Mapping
+## Copy-on-Write Model
 
-Node directory layout:
+All file data lives in SQLite tables:
 
 ```text
-overlay_lab/
-  base/
-  nodes/
-    <node_id>/
-      upper/
-      work/
-      merged/
-  sessions/
-    <session_id>.json
+recall.db
+  base_files   -- shared base layer files
+  sessions     -- session metadata
+  nodes        -- node metadata with parent_node_id ancestry
+  node_files   -- per-node file writes and whiteout (deletion) markers
 ```
 
-### Create Root Session
+### Read (merged view)
 
-- lowerdir = `overlay_lab/base`
-- upperdir/workdir/merged created under node directory
-- mounted via:
+Walk the ancestry chain from the current node up to the root, then apply each layer's writes and whiteouts on top of the base layer. The first match wins (newest ancestor checked first for single-file lookups).
 
-```bash
-mount -t overlay overlay -o lowerdir=<base>,upperdir=<upper>,workdir=<work> <merged>
-```
+### Write
 
-### Create Child Node
+Insert into `node_files` for the active node. Parent nodes are never modified.
 
-- parent = selected or active node
-- lowerdirs are flattened from parent ancestry (no nested overlay-on-overlay dependency):
-  - `lowerdirs = [parent.upperdir, ...parent.lowerdirs]`
-  - duplicates removed while preserving order
-- new empty `upper/work`
-- mount new `merged`
+### Delete
+
+Insert a whiteout marker in `node_files`. The original data in lower layers is preserved.
+
+### Branch
+
+Create a new session whose root node points to the source node as its parent. Zero data is copied -- the ancestry chain provides all lower layers automatically.
 
 ### Revert
 
-- only `active_node_id` changes
-- no file copying
-- mount performed on-demand if needed
-
-### Branch Session
-
-- new session root parent = selected source node
-- new session root lowerdirs follow source ancestry stack:
-  - `lowerdirs = [source.upperdir, ...source.lowerdirs]`
-- independent active pointer and future node chain
-
-### Why Flattened lowerdirs
-
-- avoids brittle deep chains like `lowerdir=<other_node_merged>`
-- keeps mounts stable across long interaction histories
-- makes layer provenance explicit in inspector (`upper` lineage + `base`)
-
-## Linux Requirements
-
-- Linux kernel with OverlayFS support (`/proc/filesystems` includes `overlay`) or available overlay module files
-- Mount capability (this implementation expects root privileges)
-- `mount`/`umount` binaries available
-
-Preflight endpoint:
-
-- `GET /health/preflight`
+Update `active_node_id` on the session. No file copying.
 
 ## API Endpoints
 
@@ -120,10 +89,13 @@ Preflight endpoint:
 - `GET /node/{node_id}/files`
 - `POST /node/{node_id}/file`
 - `DELETE /node/{node_id}/file`
-- `GET /graph`
-- `POST /admin/reset`
+- `GET /node/{node_id}/file?path=...`
 - `GET /node/{node_id}/layers`
+- `GET /node/{node_id}/layer-files?layer=...&index=...`
+- `GET /graph`
 - `GET /diff?from_node_id=...&to_node_id=...`
+- `POST /admin/reset`
+- `GET /health/preflight`
 
 ## Run
 
@@ -132,12 +104,6 @@ Preflight endpoint:
 ```bash
 uv sync
 make backend-dev
-```
-
-If running directly on host, use root for mount operations:
-
-```bash
-sudo env "PATH=/home/<user>/.local/bin:$PATH" make backend-dev
 ```
 
 ### Frontend
@@ -168,10 +134,10 @@ Open:
 
 Notes:
 
-- This container is configured with `privileged: true` because OverlayFS mounts require elevated privileges.
-- Persistent graph/layer metadata is stored in the named Docker volume `overlay_lab_data`.
+- No elevated privileges required -- the container runs as a normal unprivileged process.
+- Persistent graph/layer data is stored in the named Docker volume `overlay_lab_data` as a single `recall.db` SQLite file.
 - APIs are served from the same origin (`http://localhost:8000`), so no frontend API URL setup is needed.
-- Docker image now uses deterministic frontend dependency install via `npm ci`.
+- Works on Linux, macOS, and Windows (anywhere Docker or Python runs).
 
 ## Testing
 
@@ -179,12 +145,10 @@ Notes:
 make test
 ```
 
-Note: mount integration behavior requires Linux + mount privileges. Included tests focus on API, graph persistence, and lifecycle logic with mocked mounts.
+Tests run against real SQLite databases (created in temporary directories) with no mocks for the storage layer.
 
 ## Troubleshooting
 
-- `OVERLAY_NOT_SUPPORTED`: host is not Linux or overlay module unavailable.
-- `MOUNT_FAILED`: run backend with sufficient privileges and check mount options/path permissions.
-- stale mounts after crash: restart backend to trigger startup orphan cleanup, or manually `umount overlay_lab/nodes/*/merged`.
-- On macOS, running in Docker can work because Docker Desktop runs Linux inside a VM. It is still kernel/privilege dependent, so keep `privileged: true` and test with `GET /health/preflight`.
-- inspector path preview looks stale after file save: hover again or keep hover active; cache refresh is wired to file list updates.
+- `DB_ERROR`: check that the configured `OVERLAY_LAB_ROOT` directory is writable and has enough disk space.
+- After a crash, data is safe in SQLite (WAL journal mode ensures durability).
+- Inspector path preview looks stale after file save: hover again or keep hover active; cache refresh is wired to file list updates.

@@ -146,19 +146,6 @@ export default function LayerInspector({
 
   const nodeIdForPath = (path: string) => pathToNodeId.get(normalizePath(path)) ?? null;
 
-  if (!layerInfo) {
-    return <section className="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-500 shadow-sm">Select a node to inspect layers.</section>;
-  }
-
-  const loadKey = async (key: string, layer: 'merged' | 'upper' | 'lower', index?: number) => {
-    setHoverKey(key);
-    if (cache[key]) {
-      return;
-    }
-    const files = await onLoadLayerFiles(layer, index);
-    setCache((prev) => ({ ...prev, [key]: files }));
-  };
-
   useEffect(() => {
     if (!hoverKey) {
       return;
@@ -179,6 +166,19 @@ export default function LayerInspector({
     };
   }, [hoverKey, refreshToken, onLoadLayerFiles]);
 
+  if (!layerInfo) {
+    return <section className="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-500 shadow-sm">Select a node to inspect layers.</section>;
+  }
+
+  const loadKey = async (key: string, layer: 'merged' | 'upper' | 'lower', index?: number) => {
+    setHoverKey(key);
+    if (cache[key]) {
+      return;
+    }
+    const files = await onLoadLayerFiles(layer, index);
+    setCache((prev) => ({ ...prev, [key]: files }));
+  };
+
   return (
     <section
       className="space-y-2 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
@@ -188,7 +188,7 @@ export default function LayerInspector({
       }}
     >
       <div className="flex items-center gap-1.5">
-        <h3 className="text-sm font-semibold tracking-tight text-slate-800">Overlay Layer Inspector</h3>
+        <h3 className="text-sm font-semibold tracking-tight text-slate-800">Layer Inspector</h3>
         <OverlayLearningCue topic="layers" compact />
       </div>
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-600">

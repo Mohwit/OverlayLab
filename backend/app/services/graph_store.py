@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
-import shutil
 import threading
 import uuid
-from pathlib import Path
 
-from app.core.models import NodeRecord, SessionFile, SessionRecord
+from app.core.models import NodeRecord, SessionRecord, now_utc
+from app.services.db import Database
 
 SESSION_COLORS = [
     "#0f766e",
@@ -21,212 +19,212 @@ SESSION_COLORS = [
 
 
 class GraphStore:
-    def __init__(self, base_dir: Path, nodes_dir: Path, sessions_dir: Path):
-        self.base_dir = base_dir.resolve()
-        self.nodes_dir = nodes_dir.resolve()
-        self.sessions_dir = sessions_dir.resolve()
-        self._lock = threading.RLock()
-        self.sessions: dict[str, SessionRecord] = {}
-        self.nodes: dict[str, NodeRecord] = {}
+    """Manages sessions and nodes backed by a SQLite database.
 
-    def ensure_layout(self) -> None:
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.nodes_dir.mkdir(parents=True, exist_ok=True)
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+    Replaces the previous JSON-file + in-memory graph persistence with
+    direct reads/writes against the ``sessions`` and ``nodes`` tables.
+    Directory creation, lowerdir expansion, and JSON serialisation are
+    no longer needed -- ancestry is tracked implicitly via each node's
+    ``parent_node_id`` column.
+    """
+
+    def __init__(self, db: Database):
+        self._db = db
+        self._lock = threading.RLock()
 
     def load(self) -> None:
-        with self._lock:
-            self.ensure_layout()
-            self.sessions.clear()
-            self.nodes.clear()
+        """No-op retained for startup compatibility.
 
-            for file in sorted(self.sessions_dir.glob("*.json")):
-                payload = json.loads(file.read_text(encoding="utf-8"))
-                session_file = SessionFile.model_validate(payload)
-                self.sessions[session_file.session.session_id] = session_file.session
-                for node in session_file.nodes:
-                    self.nodes[node.node_id] = node
-            self._normalize_lowerdir_references()
+        The SQLite schema is initialised by ``Database.init_schema()``
+        before the application starts; there is nothing extra to load.
+        """
 
-    def _node_by_merged_path(self, merged_path: str) -> NodeRecord | None:
-        for node in self.nodes.values():
-            if node.merged == merged_path:
-                return node
-        return None
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    def _expand_lowerdirs(self, lowerdirs: list[str], visited_node_ids: set[str]) -> list[str]:
-        expanded: list[str] = []
-        for lower in lowerdirs:
-            source_node = self._node_by_merged_path(lower)
-            if source_node and source_node.node_id not in visited_node_ids:
-                nested = self._expand_lowerdirs(
-                    [source_node.upperdir, *source_node.lowerdirs],
-                    visited_node_ids | {source_node.node_id},
-                )
-                expanded.extend(nested)
-            else:
-                expanded.append(lower)
-
-        # Preserve order while removing duplicates after expansion.
-        seen: set[str] = set()
-        normalized: list[str] = []
-        for path in expanded:
-            if path in seen:
-                continue
-            seen.add(path)
-            normalized.append(path)
-        return normalized
-
-    def _normalize_lowerdir_references(self) -> None:
-        changed_session_ids: set[str] = set()
-        for node in self.nodes.values():
-            normalized = self._expand_lowerdirs(node.lowerdirs, {node.node_id})
-            if normalized == node.lowerdirs:
-                continue
-            node.lowerdirs = normalized
-            changed_session_ids.add(node.session_id)
-        for session_id in changed_session_ids:
-            self._save_session(session_id)
-
-    def _session_file_path(self, session_id: str) -> Path:
-        return self.sessions_dir / f"{session_id}.json"
-
-    def _save_session(self, session_id: str) -> None:
-        session = self.sessions[session_id]
-        nodes = sorted(
-            [n for n in self.nodes.values() if n.session_id == session_id],
-            key=lambda item: item.created_at,
-        )
-        session_file = SessionFile(session=session, nodes=nodes)
-        self._session_file_path(session_id).write_text(
-            json.dumps(session_file.model_dump(), indent=2),
-            encoding="utf-8",
-        )
-
-    def _new_id(self, prefix: str) -> str:
+    @staticmethod
+    def _new_id(prefix: str) -> str:
         return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
-    def _session_color(self) -> str:
-        return SESSION_COLORS[len(self.sessions) % len(SESSION_COLORS)]
+    def _session_color(self, conn) -> str:
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM sessions").fetchone()
+        count = row["cnt"] if row else 0
+        return SESSION_COLORS[count % len(SESSION_COLORS)]
 
-    def create_node_dirs(self, node_id: str) -> dict[str, str]:
-        root = self.nodes_dir / node_id
-        upper = root / "upper"
-        work = root / "work"
-        merged = root / "merged"
-        upper.mkdir(parents=True, exist_ok=True)
-        work.mkdir(parents=True, exist_ok=True)
-        merged.mkdir(parents=True, exist_ok=True)
-        return {
-            "upperdir": str(upper.resolve()),
-            "workdir": str(work.resolve()),
-            "merged": str(merged.resolve()),
-        }
+    @staticmethod
+    def _session_from_row(row) -> SessionRecord:
+        return SessionRecord(
+            session_id=row["session_id"],
+            name=row["name"],
+            root_node_id=row["root_node_id"],
+            active_node_id=row["active_node_id"],
+            color=row["color"],
+            created_at=row["created_at"],
+        )
 
-    def create_session(self, name: str | None = None, from_node_id: str | None = None) -> tuple[SessionRecord, NodeRecord]:
+    @staticmethod
+    def _node_from_row(row) -> NodeRecord:
+        return NodeRecord(
+            node_id=row["node_id"],
+            parent_node_id=row["parent_node_id"],
+            session_id=row["session_id"],
+            created_at=row["created_at"],
+        )
+
+    # ------------------------------------------------------------------
+    # Write operations
+    # ------------------------------------------------------------------
+
+    def create_session(
+        self, name: str | None = None, from_node_id: str | None = None
+    ) -> tuple[SessionRecord, NodeRecord]:
         with self._lock:
             session_id = self._new_id("sess")
             node_id = self._new_id("node")
-            dirs = self.create_node_dirs(node_id)
+            now = now_utc()
 
-            parent_node_id = from_node_id
-            lowerdirs = [str(self.base_dir.resolve())]
-            if from_node_id:
-                source = self.nodes[from_node_id]
-                lowerdirs = self._expand_lowerdirs([source.upperdir, *source.lowerdirs], {source.node_id})
+            with self._db.connect() as conn:
+                color = self._session_color(conn)
 
-            root_node = NodeRecord(
-                node_id=node_id,
-                parent_node_id=parent_node_id,
-                session_id=session_id,
-                lowerdirs=lowerdirs,
-                upperdir=dirs["upperdir"],
-                workdir=dirs["workdir"],
-                merged=dirs["merged"],
-                mount_state="unmounted",
-            )
+                conn.execute(
+                    "INSERT INTO sessions "
+                    "(session_id, name, root_node_id, active_node_id, color, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_id, name, node_id, node_id, color, now),
+                )
+                conn.execute(
+                    "INSERT INTO nodes "
+                    "(node_id, parent_node_id, session_id, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (node_id, from_node_id, session_id, now),
+                )
+
             session = SessionRecord(
                 session_id=session_id,
                 name=name,
                 root_node_id=node_id,
                 active_node_id=node_id,
-                color=self._session_color(),
+                color=color,
+                created_at=now,
             )
-
-            self.sessions[session_id] = session
-            self.nodes[node_id] = root_node
-            self._save_session(session_id)
-            return session, root_node
+            node = NodeRecord(
+                node_id=node_id,
+                parent_node_id=from_node_id,
+                session_id=session_id,
+                created_at=now,
+            )
+            return session, node
 
     def create_node(self, session_id: str, from_node_id: str) -> NodeRecord:
         with self._lock:
             node_id = self._new_id("node")
-            dirs = self.create_node_dirs(node_id)
-            parent = self.nodes[from_node_id]
-            lowerdirs = self._expand_lowerdirs([parent.upperdir, *parent.lowerdirs], {parent.node_id})
-            node = NodeRecord(
+            now = now_utc()
+
+            with self._db.connect() as conn:
+                conn.execute(
+                    "INSERT INTO nodes "
+                    "(node_id, parent_node_id, session_id, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (node_id, from_node_id, session_id, now),
+                )
+                conn.execute(
+                    "UPDATE sessions SET active_node_id = ? WHERE session_id = ?",
+                    (node_id, session_id),
+                )
+
+            return NodeRecord(
                 node_id=node_id,
-                parent_node_id=parent.node_id,
+                parent_node_id=from_node_id,
                 session_id=session_id,
-                lowerdirs=lowerdirs,
-                upperdir=dirs["upperdir"],
-                workdir=dirs["workdir"],
-                merged=dirs["merged"],
-                mount_state="unmounted",
+                created_at=now,
             )
-            self.nodes[node_id] = node
-            self.sessions[session_id].active_node_id = node_id
-            self._save_session(session_id)
-            return node
 
     def set_active_node(self, session_id: str, node_id: str) -> None:
         with self._lock:
-            self.sessions[session_id].active_node_id = node_id
-            self._save_session(session_id)
+            with self._db.connect() as conn:
+                conn.execute(
+                    "UPDATE sessions SET active_node_id = ? WHERE session_id = ?",
+                    (node_id, session_id),
+                )
 
     def update_node(self, node: NodeRecord) -> None:
-        with self._lock:
-            self.nodes[node.node_id] = node
-            self._save_session(node.session_id)
+        """No-op retained for backward compatibility.
+
+        Node rows are immutable after creation in the SQLite schema
+        (overlay path fields and mount_state no longer exist).  Callers
+        that still invoke this will be cleaned up when the routes are
+        migrated.
+        """
 
     def reset_graph(self) -> dict[str, int]:
         with self._lock:
-            cleared_nodes = len(self.nodes)
-            cleared_sessions = len(self.sessions)
+            with self._db.connect() as conn:
+                node_count = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM nodes"
+                ).fetchone()["cnt"]
+                session_count = conn.execute(
+                    "SELECT COUNT(*) AS cnt FROM sessions"
+                ).fetchone()["cnt"]
+                conn.execute("DELETE FROM node_files")
+                conn.execute("DELETE FROM nodes")
+                conn.execute("DELETE FROM sessions")
+                conn.execute("DELETE FROM base_files")
+            return {"nodes": node_count, "sessions": session_count}
 
-            self.sessions.clear()
-            self.nodes.clear()
-            self.ensure_layout()
-
-            for session_file in self.sessions_dir.glob("*.json"):
-                session_file.unlink(missing_ok=True)
-
-            for entry in self.nodes_dir.iterdir():
-                if entry.is_dir() and not entry.is_symlink():
-                    shutil.rmtree(entry, ignore_errors=True)
-                else:
-                    entry.unlink(missing_ok=True)
-
-            return {"nodes": cleared_nodes, "sessions": cleared_sessions}
+    # ------------------------------------------------------------------
+    # Read operations
+    # ------------------------------------------------------------------
 
     def get_session(self, session_id: str) -> SessionRecord | None:
-        return self.sessions.get(session_id)
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT session_id, name, root_node_id, active_node_id, color, created_at "
+                "FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._session_from_row(row)
 
     def get_node(self, node_id: str) -> NodeRecord | None:
-        return self.nodes.get(node_id)
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT node_id, parent_node_id, session_id, created_at "
+                "FROM nodes WHERE node_id = ?",
+                (node_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._node_from_row(row)
 
     def get_all_sessions(self) -> list[SessionRecord]:
-        return sorted(self.sessions.values(), key=lambda item: item.created_at)
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT session_id, name, root_node_id, active_node_id, color, created_at "
+                "FROM sessions ORDER BY created_at"
+            ).fetchall()
+        return [self._session_from_row(r) for r in rows]
 
     def get_all_nodes(self) -> list[NodeRecord]:
-        return sorted(self.nodes.values(), key=lambda item: item.created_at)
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT node_id, parent_node_id, session_id, created_at "
+                "FROM nodes ORDER BY created_at"
+            ).fetchall()
+        return [self._node_from_row(r) for r in rows]
 
     def get_edges(self) -> list[tuple[str, str]]:
-        edges: list[tuple[str, str]] = []
-        for node in self.nodes.values():
-            if node.parent_node_id:
-                edges.append((node.parent_node_id, node.node_id))
-        return edges
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT parent_node_id, node_id "
+                "FROM nodes WHERE parent_node_id IS NOT NULL"
+            ).fetchall()
+        return [(r["parent_node_id"], r["node_id"]) for r in rows]
 
     def active_node_ids(self) -> set[str]:
-        return {session.active_node_id for session in self.sessions.values()}
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT active_node_id FROM sessions"
+            ).fetchall()
+        return {r["active_node_id"] for r in rows}

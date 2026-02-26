@@ -31,18 +31,11 @@ def create_node(payload: NodeCreateRequest, container=Depends(get_container)):
     if parent_node.session_id != payload.session_id:
         raise AppError("NODE_NOT_FOUND", "Source node must belong to the target session.", status_code=400)
 
-    container.overlay_manager.mount_node(parent_node)
-    if parent_node.mount_state != "mounted":
-        parent_node.mount_state = "mounted"
-        container.graph_store.update_node(parent_node)
-
     node = container.graph_store.create_node(session_id=payload.session_id, from_node_id=from_node_id)
-    container.overlay_manager.mount_node(node)
-    node.mount_state = "mounted"
-    container.graph_store.update_node(node)
+    ancestry = container.sqlite_overlay.get_ancestry_chain(node.node_id)
 
     return NodeCreateResponse(
-        node=NodeDTO(**node.model_dump()),
+        node=NodeDTO.from_record(node, ancestry),
         session_active_node_id=node.node_id,
         graph_delta=GraphDelta(
             added_node_id=node.node_id,
@@ -64,10 +57,6 @@ def revert_node(node_id: str, payload: NodeRevertRequest, container=Depends(get_
     if node.session_id != session.session_id:
         raise AppError("NODE_NOT_FOUND", "Target node is not part of the selected session.", status_code=400)
 
-    container.overlay_manager.mount_node(node)
-    node.mount_state = "mounted"
-    container.graph_store.update_node(node)
-
     container.graph_store.set_active_node(payload.session_id, node_id)
     return NodeRevertResponse(session_id=payload.session_id, active_node_id=node_id)
 
@@ -77,15 +66,8 @@ def get_layers(node_id: str, container=Depends(get_container)):
     node = container.graph_store.get_node(node_id)
     if not node:
         raise AppError("NODE_NOT_FOUND", f"Node {node_id} was not found.", status_code=404)
-    return LayerInfoDTO(
-        node_id=node.node_id,
-        parent_node_id=node.parent_node_id,
-        lowerdirs=node.lowerdirs,
-        upperdir=node.upperdir,
-        workdir=node.workdir,
-        merged=node.merged,
-        mount_state=node.mount_state,
-    )
+    ancestry = container.sqlite_overlay.get_ancestry_chain(node_id)
+    return LayerInfoDTO.from_record(node, ancestry)
 
 
 @router.get("/graph")
@@ -93,8 +75,14 @@ def get_graph(container=Depends(get_container)):
     sessions = container.graph_store.get_all_sessions()
     nodes = container.graph_store.get_all_nodes()
     edges = [EdgeDTO(source=s, target=t) for s, t in container.graph_store.get_edges()]
+
+    node_dtos = []
+    for n in nodes:
+        ancestry = container.sqlite_overlay.get_ancestry_chain(n.node_id)
+        node_dtos.append(NodeDTO.from_record(n, ancestry).model_dump())
+
     return {
         "sessions": [s.model_dump() for s in sessions],
-        "nodes": [n.model_dump() for n in nodes],
+        "nodes": node_dtos,
         "edges": [e.model_dump() for e in edges],
     }

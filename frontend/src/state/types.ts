@@ -75,9 +75,7 @@ export interface DiffDTO {
 }
 
 export interface HealthPreflightDTO {
-  linux: boolean;
-  overlay_supported: boolean;
-  mount_capable: boolean;
+  ready: boolean;
   message: string;
 }
 

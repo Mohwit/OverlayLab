@@ -10,18 +10,12 @@ RUN npm run build
 FROM python:3.11-slim AS runtime
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends util-linux \
-    && rm -rf /var/lib/apt/lists/*
-
 RUN pip install --no-cache-dir fastapi uvicorn pydantic
 
 COPY backend/ /app/backend/
 COPY --from=frontend-build /build/frontend/dist /app/frontend_dist
-COPY overlay_lab/base /app/overlay_lab/base
-COPY overlay_lab/sessions/.gitkeep /app/overlay_lab/sessions/.gitkeep
 
-RUN mkdir -p /app/overlay_lab/nodes /app/overlay_lab/sessions
+RUN mkdir -p /app/overlay_lab
 
 ENV OVERLAY_LAB_ROOT=/app/overlay_lab
 EXPOSE 8000

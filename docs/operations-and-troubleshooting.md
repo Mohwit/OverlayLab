@@ -1,38 +1,38 @@
 # Operations and Troubleshooting
 
-This guide focuses on running the backend reliably on Linux hosts and diagnosing OverlayFS issues.
+This guide covers running the application and diagnosing common issues.
 
-## 1. Host Prerequisites
+## 1. Prerequisites
 
-- Linux kernel runtime
-- OverlayFS available via:
-  - `/proc/filesystems` containing `overlay`, or
-  - overlay module files under `/lib/modules/<kernel>/kernel/fs/overlayfs/overlay.ko*`
-- `mount` and `umount` available in PATH
-- backend process with mount privilege (root in this implementation)
+- Python 3.10+
+- `uv` package manager (or pip with a virtualenv)
+- Node.js and npm (for frontend development)
+- SQLite3 (included in Python standard library)
 
-Preflight logic reference: [backend/app/services/overlay_manager.py](../backend/app/services/overlay_manager.py)
+No Linux kernel, root privileges, or special filesystem support is required.
 
-## 2. Verify OverlayFS Manually
+## 2. Start Backend
 
 ```bash
-uname -a
-cat /proc/filesystems | grep overlay || true
-ls /lib/modules/$(uname -r)/kernel/fs/overlayfs/overlay.ko* 2>/dev/null || true
+make backend-dev
 ```
 
-## 3. Start Backend with Root Privileges
-
-If `uv` is installed under `~/.local/bin`, preserve PATH when using `sudo`:
+Or directly:
 
 ```bash
-sudo env "PATH=$HOME/.local/bin:$PATH" make backend-dev
+uv run uvicorn app.main:app --app-dir backend --reload --host 0.0.0.0 --port 8000
 ```
 
-Alternative direct run:
+## 3. Start Frontend
 
 ```bash
-sudo env "PATH=$HOME/.local/bin:$PATH" uv run uvicorn app.main:app --app-dir backend --reload --host 0.0.0.0 --port 8000
+cd frontend && npm run dev
+```
+
+Set API base if the backend runs on a different host:
+
+```bash
+export VITE_API_BASE=http://localhost:8000
 ```
 
 ## 4. Confirm Preflight from API
@@ -45,100 +45,73 @@ Expected success shape:
 
 ```json
 {
-  "linux": true,
-  "overlay_supported": true,
-  "mount_capable": true,
-  "message": "OverlayFS available."
+  "ready": true,
+  "message": "SQLite overlay engine is operational."
 }
 ```
 
+If `ready` is `false`, the SQLite database at `OVERLAY_LAB_ROOT/recall.db` is not writable. Check directory permissions and disk space.
+
 ## 5. Common Errors
 
-### 5.1 `OVERLAY_NOT_SUPPORTED`
+### 5.1 `DB_ERROR`
 
 Meaning:
 
-- not running on Linux, or
-- no overlay support detected
+- SQLite database is not writable
+- Disk full or directory permissions issue
+- Database file is corrupted
 
-Where raised:
-
-- `OverlayManager.ensure_supported()`
-- reference: [backend/app/services/overlay_manager.py](../backend/app/services/overlay_manager.py)
-
-### 5.2 `MOUNT_FAILED` with `wrong fs type, bad option, bad superblock`
-
-Typical causes:
-
-- process not running with mount privileges
-- invalid/incompatible mount options
-- kernel policy restrictions
-- path issues around `upperdir/workdir/merged`
-
-Inspect details from API error response (`details.stderr`), then check kernel logs:
+Diagnosis:
 
 ```bash
-dmesg | tail -n 80
+ls -la overlay_lab/recall.db
+sqlite3 overlay_lab/recall.db "PRAGMA integrity_check;"
 ```
 
-Mount invocation reference:
-
-```python
-result = run_command([
-    "mount",
-    "-t",
-    "overlay",
-    "overlay",
-    "-o",
-    options,
-    node.merged,
-])
-```
-
-Source: [backend/app/services/overlay_manager.py](../backend/app/services/overlay_manager.py)
-
-### 5.3 `make: uv: No such file or directory`
+### 5.2 `make: uv: No such file or directory`
 
 Cause:
 
-- `uv` not installed or not in root PATH under `sudo`
+- `uv` not installed or not in PATH
 
 Fix:
 
-- install uv, or
-- call `sudo env "PATH=$HOME/.local/bin:$PATH" ...`
+- Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Or use pip: `pip install -r requirements.txt` and run uvicorn directly
 
-## 6. Mount State and Cleanup Behavior
+### 5.3 `INVALID_FILE_PATH`
 
-### Idle cleanup
+Meaning:
 
-- background worker periodically checks mounted nodes
-- nodes not active and older than TTL are unmounted
+- File path is absolute, contains `..`, or has a disallowed extension
+- Only `.txt` and `.md` files are accepted
 
-Reference:
+Reference: [backend/app/utils/paths.py](../backend/app/utils/paths.py)
 
-- [backend/app/services/cleanup.py](../backend/app/services/cleanup.py)
-- [backend/app/core/config.py](../backend/app/core/config.py)
+## 6. Configuration
 
-Environment knobs:
+The application reads one environment variable:
 
-- `MOUNT_IDLE_TTL_SECONDS` (default `120`)
-- `CLEANUP_INTERVAL_SECONDS` (default `30`)
+| Variable | Default | Description |
+| --- | --- | --- |
+| `OVERLAY_LAB_ROOT` | `overlay_lab` | Parent directory for the `recall.db` SQLite database |
 
-### Startup orphan cleanup
+Reference: [backend/app/core/config.py](../backend/app/core/config.py)
 
-At startup, unknown overlay mounts under node root are unmounted to recover from crashes.
+## 7. Data Reset
 
-Reference: [backend/app/main.py](../backend/app/main.py), [backend/app/services/overlay_manager.py](../backend/app/services/overlay_manager.py)
+`POST /admin/reset` clears all data:
 
-## 7. Data Reset Behavior
+- All file data (`node_files`, `base_files`)
+- All node metadata (`nodes`)
+- All session metadata (`sessions`)
 
-`POST /admin/reset` clears:
+The database schema is preserved. The app auto-creates a new default session on the next frontend load.
 
-- mounted overlays (best effort unmount)
-- session JSON metadata
-- all node directories (`upper/work/merged`)
-- in-memory mount access cache
+```bash
+curl -s -X POST http://localhost:8000/admin/reset | jq
+```
 
 Reference:
 
@@ -147,23 +120,43 @@ Reference:
 
 ## 8. Security and File Validation Rules
 
-Only `.txt` and `.md` files are accepted for write/read operations.  
+Only `.txt` and `.md` files are accepted for write/read operations.
 Paths must be relative and cannot traverse upward.
 
 Reference: [backend/app/utils/paths.py](../backend/app/utils/paths.py)
 
-## 9. Operational Checks
+## 9. Docker
 
-Use this quick checklist when debugging:
+Build and run with Docker Compose:
 
-1. `GET /health/preflight` returns all `true`.
-2. Backend process runs as root.
-3. `/proc/filesystems` has `overlay` or module fallback exists.
-4. `overlay_lab/nodes/<node>/upper|work|merged` directories exist.
-5. Failed mount stderr and recent `dmesg` lines are reviewed.
-6. `POST /admin/reset` works if state gets inconsistent.
+```bash
+docker compose up --build
+```
 
-## 10. Tests You Can Run
+The container runs as a normal unprivileged process. No `--privileged` flag is needed. Persistent data is stored in the `overlay_lab_data` Docker volume as a single `recall.db` file.
+
+Open `http://localhost:8000` for the full UI.
+
+## 10. Backup and Recovery
+
+The SQLite database uses WAL (Write-Ahead Logging) journal mode for durability. To back up:
+
+```bash
+sqlite3 overlay_lab/recall.db ".backup overlay_lab/recall-backup.db"
+```
+
+After a crash, SQLite automatically recovers from the WAL journal on the next connection.
+
+## 11. Operational Checks
+
+Use this checklist when debugging:
+
+1. `GET /health/preflight` returns `ready: true`.
+2. `overlay_lab/` directory exists and is writable.
+3. `recall.db` file is not locked by another process.
+4. `POST /admin/reset` works if state gets inconsistent.
+
+## 12. Tests
 
 From repo root:
 
@@ -174,9 +167,8 @@ make test
 Targeted:
 
 ```bash
-uv run pytest backend/tests/test_overlay_manager.py -q
 uv run pytest backend/tests/test_graph_store.py -q
 uv run pytest backend/tests/test_api.py -q
 ```
 
-Note: tests mock mount behavior for API routes, so they can run without real kernel mounts.
+Tests run against real SQLite databases (created in temporary directories) with no mocks for the storage layer.

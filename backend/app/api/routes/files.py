@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends
@@ -11,13 +10,30 @@ from app.core.schemas import (
     FileContentResponse,
     FileDeleteRequest,
     FileDeleteResponse,
+    FileEntryDTO,
     FilesResponse,
     LayerFilesResponse,
     FileWriteRequest,
     FileWriteResponse,
 )
+from app.services.sqlite_overlay import FileRecord
 
 router = APIRouter(tags=["files"])
+
+
+def _record_to_entry(record: FileRecord) -> FileEntryDTO:
+    from datetime import datetime
+
+    try:
+        mtime = datetime.fromisoformat(record.created_at).timestamp()
+    except (ValueError, TypeError):
+        mtime = 0.0
+    return FileEntryDTO(
+        path=record.path,
+        type="dir" if record.is_dir else "file",
+        size=record.size,
+        mtime=mtime,
+    )
 
 
 @router.get("/node/{node_id}/files", response_model=FilesResponse)
@@ -26,12 +42,7 @@ def get_node_files(node_id: str, container=Depends(get_container)):
     if not node:
         raise AppError("NODE_NOT_FOUND", f"Node {node_id} was not found.", status_code=404)
 
-    container.overlay_manager.mount_node(node)
-    if node.mount_state != "mounted":
-        node.mount_state = "mounted"
-        container.graph_store.update_node(node)
-
-    entries = container.file_service.list_files(node)
+    entries = container.file_service.list_files(node_id)
     return FilesResponse(node_id=node_id, files=entries)
 
 
@@ -41,12 +52,7 @@ def get_file_content(node_id: str, path: str, container=Depends(get_container)):
     if not node:
         raise AppError("NODE_NOT_FOUND", f"Node {node_id} was not found.", status_code=404)
 
-    container.overlay_manager.mount_node(node)
-    if node.mount_state != "mounted":
-        node.mount_state = "mounted"
-        container.graph_store.update_node(node)
-
-    content = container.file_service.read_text_file(node, path)
+    content = container.file_service.read_text_file(node_id, path)
     return FileContentResponse(node_id=node_id, path=path, content=content)
 
 
@@ -61,22 +67,8 @@ def get_layer_files(
     if not node:
         raise AppError("NODE_NOT_FOUND", f"Node {node_id} was not found.", status_code=404)
 
-    if layer == "merged":
-        container.overlay_manager.mount_node(node)
-        if node.mount_state != "mounted":
-            node.mount_state = "mounted"
-            container.graph_store.update_node(node)
-        root = Path(node.merged)
-    elif layer == "upper":
-        root = Path(node.upperdir)
-    else:
-        if index is None:
-            raise AppError("INVALID_FILE_PATH", "Lowerdir index is required for lower layer inspection.", status_code=400)
-        if index < 0 or index >= len(node.lowerdirs):
-            raise AppError("INVALID_FILE_PATH", "Lowerdir index out of range.", status_code=400)
-        root = Path(node.lowerdirs[index])
-
-    files = container.file_service.list_files_from_root(root)
+    records = container.sqlite_overlay.list_layer_files(node_id, layer, index)
+    files = [_record_to_entry(r) for r in records]
     return LayerFilesResponse(node_id=node_id, layer=layer, index=index, files=files)
 
 
@@ -86,12 +78,7 @@ def write_file(node_id: str, payload: FileWriteRequest, container=Depends(get_co
     if not node:
         raise AppError("NODE_NOT_FOUND", f"Node {node_id} was not found.", status_code=404)
 
-    container.overlay_manager.mount_node(node)
-    node.mount_state = "mounted"
-    container.graph_store.update_node(node)
-
-    bytes_written = container.file_service.write_file(node, payload.path, payload.content, payload.mode)
-    container.overlay_manager.touch(node_id)
+    bytes_written = container.file_service.write_file(node_id, payload.path, payload.content, payload.mode)
     return FileWriteResponse(path=payload.path, bytes_written=bytes_written, node_id=node_id)
 
 
@@ -101,10 +88,5 @@ def delete_file(node_id: str, payload: FileDeleteRequest, container=Depends(get_
     if not node:
         raise AppError("NODE_NOT_FOUND", f"Node {node_id} was not found.", status_code=404)
 
-    container.overlay_manager.mount_node(node)
-    node.mount_state = "mounted"
-    container.graph_store.update_node(node)
-
-    container.file_service.delete_file(node, payload.path)
-    container.overlay_manager.touch(node_id)
+    container.file_service.delete_file(node_id, payload.path)
     return FileDeleteResponse(path=payload.path, deleted=True)

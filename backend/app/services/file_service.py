@@ -1,99 +1,99 @@
 from __future__ import annotations
 
 import difflib
+from datetime import datetime
 from pathlib import Path
 
 from app.core.errors import AppError
-from app.core.models import NodeRecord
 from app.core.schemas import DiffDTO, DiffFileDTO, FileEntryDTO
-from app.utils.paths import safe_join, validate_relative_file_path
+from app.services.sqlite_overlay import SqliteOverlayFS
+from app.utils.paths import validate_relative_file_path
+
+
+def _iso_to_timestamp(iso_str: str) -> float:
+    try:
+        return datetime.fromisoformat(iso_str).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _decode_content(raw: bytes | None) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="ignore")
+    return raw
 
 
 class FileService:
-    def list_files(self, node: NodeRecord) -> list[FileEntryDTO]:
-        merged = Path(node.merged)
-        entries: list[FileEntryDTO] = []
-        if not merged.exists():
-            return entries
+    """High-level file operations backed by SqliteOverlayFS.
 
-        for path in sorted(merged.rglob("*")):
-            rel = path.relative_to(merged).as_posix()
-            stat = path.stat()
+    All reads resolve through the COW ancestry chain; writes and deletes
+    target the specified node's upper layer.
+    """
+
+    def __init__(self, overlay: SqliteOverlayFS) -> None:
+        self._overlay = overlay
+
+    def list_files(self, node_id: str) -> list[FileEntryDTO]:
+        merged = self._overlay.resolve_merged_files(node_id)
+        entries: list[FileEntryDTO] = []
+        for _path, record in sorted(merged.items()):
             entries.append(
                 FileEntryDTO(
-                    path=rel,
-                    type="dir" if path.is_dir() else "file",
-                    size=0 if path.is_dir() else stat.st_size,
-                    mtime=stat.st_mtime,
+                    path=record.path,
+                    type="dir" if record.is_dir else "file",
+                    size=record.size,
+                    mtime=_iso_to_timestamp(record.created_at),
                 )
             )
         return entries
 
-    def read_text_files(self, node: NodeRecord) -> dict[str, str]:
-        merged = Path(node.merged)
+    def read_text_files(self, node_id: str) -> dict[str, str]:
+        merged = self._overlay.resolve_merged_files(node_id)
         data: dict[str, str] = {}
-        if not merged.exists():
-            return data
-
-        for path in sorted(merged.rglob("*")):
-            if not path.is_file():
+        for path, record in sorted(merged.items()):
+            if record.is_dir:
                 continue
-            if path.suffix.lower() not in {".txt", ".md"}:
+            if Path(path).suffix.lower() not in {".txt", ".md"}:
                 continue
-            rel = path.relative_to(merged).as_posix()
-            data[rel] = path.read_text(encoding="utf-8", errors="ignore")
+            data[path] = _decode_content(record.content)
         return data
 
-    def read_text_file(self, node: NodeRecord, path_str: str) -> str:
+    def read_text_file(self, node_id: str, path_str: str) -> str:
         relative = validate_relative_file_path(path_str)
-        merged = Path(node.merged)
-        target = safe_join(merged, relative)
-        if not target.exists() or not target.is_file():
-            raise AppError("INVALID_FILE_PATH", "Requested file does not exist.", status_code=404)
-        return target.read_text(encoding="utf-8", errors="ignore")
-
-    def list_files_from_root(self, root: Path) -> list[FileEntryDTO]:
-        entries: list[FileEntryDTO] = []
-        if not root.exists():
-            return entries
-
-        for path in sorted(root.rglob("*")):
-            rel = path.relative_to(root).as_posix()
-            stat = path.stat()
-            entries.append(
-                FileEntryDTO(
-                    path=rel,
-                    type="dir" if path.is_dir() else "file",
-                    size=0 if path.is_dir() else stat.st_size,
-                    mtime=stat.st_mtime,
-                )
+        rel_str = relative.as_posix()
+        record = self._overlay.resolve_file(node_id, rel_str)
+        if record is None or record.is_dir:
+            raise AppError(
+                "INVALID_FILE_PATH",
+                "Requested file does not exist.",
+                status_code=404,
             )
-        return entries
+        return _decode_content(record.content)
 
-    def write_file(self, node: NodeRecord, path_str: str, content: str, mode: str) -> int:
+    def write_file(
+        self, node_id: str, path_str: str, content: str, mode: str
+    ) -> int:
         relative = validate_relative_file_path(path_str)
-        merged = Path(node.merged)
-        target = safe_join(merged, relative)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        rel_str = relative.as_posix()
 
-        write_mode = "a" if mode == "append" else "w"
-        with target.open(write_mode, encoding="utf-8") as handle:
-            written = handle.write(content)
-        return written
+        if mode == "append":
+            existing = self._overlay.resolve_file(node_id, rel_str)
+            if existing is not None and existing.content is not None:
+                content = _decode_content(existing.content) + content
 
-    def delete_file(self, node: NodeRecord, path_str: str) -> None:
+        content_bytes = content.encode("utf-8")
+        return self._overlay.write_file(node_id, rel_str, content_bytes)
+
+    def delete_file(self, node_id: str, path_str: str) -> None:
         relative = validate_relative_file_path(path_str)
-        merged = Path(node.merged)
-        target = safe_join(merged, relative)
-        if not target.exists():
-            raise AppError("INVALID_FILE_PATH", "File does not exist in selected node merged view.", status_code=404)
-        if target.is_dir():
-            raise AppError("INVALID_FILE_PATH", "Deleting directories is not supported.", status_code=400)
-        target.unlink()
+        rel_str = relative.as_posix()
+        self._overlay.delete_file(node_id, rel_str)
 
-    def diff_nodes(self, from_node: NodeRecord, to_node: NodeRecord) -> DiffDTO:
-        before = self.read_text_files(from_node)
-        after = self.read_text_files(to_node)
+    def diff_nodes(self, from_node_id: str, to_node_id: str) -> DiffDTO:
+        before = self.read_text_files(from_node_id)
+        after = self.read_text_files(to_node_id)
 
         files: list[DiffFileDTO] = []
         all_paths = sorted(set(before) | set(after))
@@ -115,10 +115,16 @@ class FileService:
             diff_lines = difflib.unified_diff(
                 (b or "").splitlines(),
                 (a or "").splitlines(),
-                fromfile=f"{from_node.node_id}:{path}",
-                tofile=f"{to_node.node_id}:{path}",
+                fromfile=f"{from_node_id}:{path}",
+                tofile=f"{to_node_id}:{path}",
                 lineterm="",
             )
-            files.append(DiffFileDTO(path=path, status=status, diff="\n".join(diff_lines)))
+            files.append(
+                DiffFileDTO(path=path, status=status, diff="\n".join(diff_lines))
+            )
 
-        return DiffDTO(from_node_id=from_node.node_id, to_node_id=to_node.node_id, files=files)
+        return DiffDTO(
+            from_node_id=from_node_id,
+            to_node_id=to_node_id,
+            files=files,
+        )

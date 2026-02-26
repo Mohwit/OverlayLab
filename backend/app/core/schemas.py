@@ -4,6 +4,20 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.core.models import NodeRecord
+
+
+def _virtual_lowerdirs(node_id: str, ancestry: list[str]) -> list[str]:
+    """Build virtual lowerdir labels from an ancestry chain.
+
+    *ancestry* is ``[node_id, parent_id, grandparent_id, ...]``.
+    Everything after the first entry becomes a lower-layer label,
+    with the base layer appended at the end.
+    """
+    labels = [f"node:{aid}/upper" for aid in ancestry[1:]]
+    labels.append("base")
+    return labels
+
 
 class ErrorDTO(BaseModel):
     code: str
@@ -15,12 +29,30 @@ class NodeDTO(BaseModel):
     node_id: str
     parent_node_id: str | None
     session_id: str
-    lowerdirs: list[str]
-    upperdir: str
-    workdir: str
-    merged: str
-    mount_state: Literal["mounted", "unmounted"]
+    lowerdirs: list[str] = Field(default_factory=list)
+    upperdir: str = ""
+    workdir: str = ""
+    merged: str = ""
+    mount_state: Literal["mounted", "unmounted"] = "mounted"
     created_at: str
+
+    @classmethod
+    def from_record(
+        cls, record: NodeRecord, ancestry: list[str] | None = None
+    ) -> NodeDTO:
+        if ancestry is None:
+            ancestry = [record.node_id]
+        return cls(
+            node_id=record.node_id,
+            parent_node_id=record.parent_node_id,
+            session_id=record.session_id,
+            lowerdirs=_virtual_lowerdirs(record.node_id, ancestry),
+            upperdir=f"node:{record.node_id}/upper",
+            workdir=f"node:{record.node_id}/work",
+            merged=f"node:{record.node_id}/merged",
+            mount_state="mounted",
+            created_at=record.created_at,
+        )
 
 
 class SessionDTO(BaseModel):
@@ -109,11 +141,27 @@ class LayerFilesResponse(BaseModel):
 class LayerInfoDTO(BaseModel):
     node_id: str
     parent_node_id: str | None
-    lowerdirs: list[str]
-    upperdir: str
-    workdir: str
-    merged: str
-    mount_state: Literal["mounted", "unmounted"]
+    lowerdirs: list[str] = Field(default_factory=list)
+    upperdir: str = ""
+    workdir: str = ""
+    merged: str = ""
+    mount_state: Literal["mounted", "unmounted"] = "mounted"
+
+    @classmethod
+    def from_record(
+        cls, record: NodeRecord, ancestry: list[str] | None = None
+    ) -> LayerInfoDTO:
+        if ancestry is None:
+            ancestry = [record.node_id]
+        return cls(
+            node_id=record.node_id,
+            parent_node_id=record.parent_node_id,
+            lowerdirs=_virtual_lowerdirs(record.node_id, ancestry),
+            upperdir=f"node:{record.node_id}/upper",
+            workdir=f"node:{record.node_id}/work",
+            merged=f"node:{record.node_id}/merged",
+            mount_state="mounted",
+        )
 
 
 class GraphDelta(BaseModel):
@@ -157,9 +205,7 @@ class DiffDTO(BaseModel):
 
 
 class HealthPreflightDTO(BaseModel):
-    linux: bool
-    overlay_supported: bool
-    mount_capable: bool
+    ready: bool
     message: str
 
 

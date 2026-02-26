@@ -15,23 +15,12 @@ from app.services.container import container
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    container.graph_store.load()
-    known_paths = {node.merged for node in container.graph_store.get_all_nodes()}
-    container.overlay_manager.startup_cleanup_orphan_mounts(known_paths)
-
-    for node in container.graph_store.get_all_nodes():
-        node.mount_state = "mounted" if container.overlay_manager.is_mounted(node.merged) else "unmounted"
-        container.graph_store.update_node(node)
-
-    await container.cleanup_worker.start()
-    try:
-        yield
-    finally:
-        await container.cleanup_worker.stop()
-        await container.cleanup_worker.shutdown_unmount_all()
+    container.db.init_schema()
+    yield
+    container.db.close()
 
 
-app = FastAPI(title="OverlayFS Session Graph Lab", lifespan=lifespan)
+app = FastAPI(title="Recall FS - Session Graph Lab", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

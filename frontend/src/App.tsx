@@ -43,7 +43,7 @@ export default function App() {
 
   const handleReset = () => {
     const confirmed = window.confirm(
-      'Reset everything? This will unmount overlays and delete all local session/node files.',
+      'Reset everything? This will delete all sessions, nodes, and file data.',
     );
     if (!confirmed) {
       return;
@@ -55,8 +55,8 @@ export default function App() {
     <main className="h-screen bg-slate-100 p-4 text-slate-900">
       <div className="mb-3 flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
         <div className="flex items-center gap-2">
-          <h1 className="text-sm font-semibold tracking-tight text-slate-800">OverlayFS Session Graph Lab</h1>
-          <OverlayLearningCue topic="overview" buttonText="OverlayFS Guide" />
+          <h1 className="text-sm font-semibold tracking-tight text-slate-800">Recall-FS Session Graph Lab</h1>
+          <OverlayLearningCue topic="overview" buttonText="Layer Guide" />
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -68,9 +68,9 @@ export default function App() {
           </button>
         </div>
       </div>
-      {preflight && (!preflight.linux || !preflight.overlay_supported || !preflight.mount_capable) && (
+      {preflight && !preflight.ready && (
         <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-800">
-          OverlayFS preflight failed: {preflight.message}
+          Preflight check failed: {preflight.message}
         </div>
       )}
       {error && <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50/70 px-3 py-2 text-xs text-rose-700">{error}</div>}
